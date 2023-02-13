@@ -1,5 +1,50 @@
+require 'bundler'
+Bundler.require
+require_relative './helper'
+
 default_platform(:android)
 skip_docs
 
 platform :android do
+  lane :'edit-secrets' do
+    editor = ENV['EDITOR'] || 'vi'
+
+    Tempfile.create(['', '.yml']) do |file|
+      # 復号して一時ファイルに書き出し
+      sh(
+        "yaml_vault decrypt #{project_root_path}/secrets.yml -o #{file.path}",
+        log: false
+      )
+
+      # エディタで開く
+      system("#{editor} \"#{file.path}\"")
+
+      # 編集した秘匿情報を暗号化
+      sh(
+        "yaml_vault encrypt #{file.path} -o #{project_root_path}/secrets.yml",
+        log: false
+      )
+    end
+  end
+
+  lane :'build-release' do
+    # 暗号化とBase64でデコードされたアップロードキー復号して、使用できるようにファイル出力
+    File.write("#{project_root_path}/app/release.keystore", Base64.decode64(yaml_vault.dig('keystore', 'file')))
+
+    # 暗号化されたキーストアの認証情報を復号して使用できるようにファイル出力
+    File.write("#{project_root_path}/app/release.gradle", <<~EOS
+      signingConfigs {
+        release {
+            storeFile file("release.keystore")
+            storePassword "#{yaml_vault.dig('keystore', 'store_password')}"
+            keyAlias "#{yaml_vault.dig('keystore', 'key_alias')}"
+            keyPassword "#{yaml_vault.dig('keystore', 'key_password')}"
+        }
+      }
+    EOS
+    )
+
+    gradle(task: 'clean')
+    gradle(task: 'bundle', build_type: 'release')
+  end
 end
